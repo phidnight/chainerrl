@@ -70,14 +70,15 @@ class GAIL(AttributeSavingMixin, BatchAgent):
                  discriminator_loss_decay=0.99,
                  discriminator_entropy_decay=0.99,
                  gpu=None):
-        if gpu is not None and gpu >= 0:
-            cuda.get_device_from_id(gpu).use()
-            self.model.to_gpu(device=gpu)
-
         self.actor = actor
         self.actor_optimizer = actor_optimizer
         self.discriminator = discriminator
         self.discriminator_optimizer = discriminator_optimizer
+
+        if gpu is not None and gpu >= 0:
+            cuda.get_device_from_id(gpu).use()
+            self.discriminator.to_gpu(device=gpu)
+
         self.experts = experts
         self.discriminator_input_dim = (
             self.experts.obs.shape[1] + self.experts.action.shape[1])
@@ -159,7 +160,11 @@ class GAIL(AttributeSavingMixin, BatchAgent):
         self.last_action = action
         obs_and_action = np.concatenate((obs, action), axis=0)
         discriminator_input = np.expand_dims(obs_and_action, axis=0)
-        self.last_discriminator_value = -F.log(1 - self.discriminator(discriminator_input) + 1e-8).array[0, 0]  # NOQA
+
+        with chainer.using_config('train', False), chainer.no_backprop_mode():
+            self.last_discriminator_value = chainer.cuda.to_cpu(
+                -F.log(1 - self.discriminator(discriminator_input) + 1e-8).array)[0, 0]  # NOQA
+
         self.trajectories = np.append(self.trajectories,
                                       discriminator_input, axis=0)
         self._update_if_dataset_is_ready()
@@ -197,12 +202,15 @@ class GAIL(AttributeSavingMixin, BatchAgent):
     def batch_observe_and_train(self, batch_obs, batch_reward,
                                 batch_done, batch_reset):
         # update policy
-        batch_discriminator_values = []
-        for obs, action in zip(self.batch_last_state, self.batch_last_action):
-            obs_and_action = np.concatenate((obs, action), axis=0)
-            discriminator_input = np.expand_dims(obs_and_action, axis=0)
-            reward = -F.log(1 - self.discriminator(discriminator_input) + 1e-8).array[0, 0]  # NOQA
-            batch_discriminator_values.append(reward)
+        with chainer.using_config('train', False), chainer.no_backprop_mode():
+            batch_discriminator_values = []
+            for obs, action in zip(self.batch_last_state,
+                                   self.batch_last_action):
+                obs_and_action = np.concatenate((obs, action), axis=0)
+                discriminator_input = np.expand_dims(obs_and_action, axis=0)
+                reward = chainer.cuda.to_cpu(
+                    -F.log(1 - self.discriminator(discriminator_input) + 1e-8)).array[0, 0]  # NOQA
+                batch_discriminator_values.append(reward)
 
         self.actor.batch_observe_and_train(batch_obs,
                                            tuple(batch_discriminator_values),
