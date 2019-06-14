@@ -51,4 +51,4 @@ class ExpertDataset:
         keys = np.random.permutation(self.size)[:sample_size]
         obs = self.obs[keys]
         action = self.action[keys]
-        return np.concatenate((obs, action), axis=1)
+        return (obs, action)

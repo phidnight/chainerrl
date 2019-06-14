@@ -20,14 +20,11 @@ class Discriminator(chainer.Chain, AttributeSavingMixin):
     def __init__(self, obs_size, acs_size, obs_normalizer=None,
                  hidden_sizes=(100, 100), last_wscale=0.01):
         super().__init__()
-        self.obs_size = obs_size
         self.obs_normalizer = obs_normalizer
         self.model = MLP(obs_size + acs_size, 1, hidden_sizes,
                          last_wscale=last_wscale, nonlinearity=F.tanh)
 
-    def __call__(self, data, update_obs_normalizer=False):
-        obs = data[:, :self.obs_size]
-        acs = data[:, self.obs_size:]
+    def __call__(self, obs, acs, update_obs_normalizer=False):
         obs = self.obs_normalizer(
                 obs,
                 update=update_obs_normalizer)
@@ -80,8 +77,8 @@ class GAIL(AttributeSavingMixin, BatchAgent):
             self.discriminator.to_gpu(device=gpu)
 
         self.experts = experts
-        self.discriminator_input_dim = (
-            self.experts.obs.shape[1] + self.experts.action.shape[1])
+        self.observation_dim = self.experts.obs.shape[1]
+        self.action_dim = self.experts.action.shape[1]
         self._reset_trajectories()
         self.last_episode = []
         self.last_observation = None
@@ -104,17 +101,21 @@ class GAIL(AttributeSavingMixin, BatchAgent):
         self.batch_last_action = None
 
     def _reset_trajectories(self):
-        self.trajectories = np.empty((0, self.discriminator_input_dim),
+        self.trajectories_obs = np.empty((0, self.observation_dim),
+                                     'float32')
+        self.trajectories_acs = np.empty((0, self.action_dim),
                                      'float32')
 
     def _get_entropy(self, values):
         return F.average((-values * F.log2(values + 1e-8)
                          - (1 - values) * F.log2(1 - values + 1e-8)))
 
-    def _loss(self, fake_batch, true_batch):
-        infer_fake = self.discriminator(fake_batch)
+    def _loss(self, fake_batch_obs, fake_batch_acs,
+              true_batch_obs, true_batch_acs):
+        infer_fake = self.discriminator(fake_batch_obs, fake_batch_acs)
         L1 = -F.average(F.log(1 - infer_fake + 1e-8))
-        infer_true = self.discriminator(true_batch, update_obs_normalizer=True)
+        infer_true = self.discriminator(true_batch_obs, true_batch_acs,
+                                        update_obs_normalizer=True)
         L2 = -F.average(F.log(infer_true + 1e-8))
         entropy = (
             self._get_entropy(infer_fake) / 2
@@ -132,20 +133,27 @@ class GAIL(AttributeSavingMixin, BatchAgent):
         return loss
 
     def _update(self):
-        trajectory_size = len(self.trajectories)
-        expert_selected_dataset = self.experts.get_samples(trajectory_size)
+        trajectory_size = len(self.trajectories_obs)
+        expert_selected_obs, expert_selected_acs = self.experts.get_samples(trajectory_size)
         fake_iter = chainer.iterators.SerialIterator(
-            self.trajectories, self.minibatch_size)
+            np.random.permutation(np.arange(trajectory_size)),
+            self.minibatch_size)
         true_iter = chainer.iterators.SerialIterator(
-            expert_selected_dataset, self.minibatch_size)
+            np.random.permutation(np.arange(trajectory_size)),
+            self.minibatch_size)
         while fake_iter.epoch < self.epochs:
-            fake_batch = np.array(fake_iter.__next__())
-            true_batch = np.array(true_iter.__next__())
+            fake_batch_keys = np.array(fake_iter.__next__())
+            fake_batch_obs = self.trajectories_obs[fake_batch_keys]
+            fake_batch_acs = self.trajectories_acs[fake_batch_keys]
+            true_batch_keys = np.array(true_iter.__next__())
+            true_batch_obs = expert_selected_obs[true_batch_keys]
+            true_batch_acs = expert_selected_acs[true_batch_keys]
             self.discriminator_optimizer.update(
-                lambda: self._loss(fake_batch, true_batch))
+                lambda: self._loss(fake_batch_obs, fake_batch_acs,
+                                   true_batch_obs, true_batch_acs))
 
     def _update_if_dataset_is_ready(self):
-        if len(self.trajectories) >= self.update_interval:
+        if len(self.trajectories_obs) >= self.update_interval:
             self._update()
             self.update_count += 1
             self._reset_trajectories()
@@ -158,15 +166,17 @@ class GAIL(AttributeSavingMixin, BatchAgent):
         self.t += 1
         self.last_observation = obs
         self.last_action = action
-        obs_and_action = np.concatenate((obs, action), axis=0)
-        discriminator_input = np.expand_dims(obs_and_action, axis=0)
+        discriminator_input_obs = np.expand_dims(obs, axis=0)
+        discriminator_input_acs = np.expand_dims(action, axis=0)
 
         with chainer.using_config('train', False), chainer.no_backprop_mode():
             self.last_discriminator_value = chainer.cuda.to_cpu(
-                -F.log(1 - self.discriminator(discriminator_input) + 1e-8).array)[0, 0]  # NOQA
+                -F.log(1 - self.discriminator(discriminator_input_obs, discriminator_input_acs) + 1e-8).array)[0, 0]  # NOQA
 
-        self.trajectories = np.append(self.trajectories,
-                                      discriminator_input, axis=0)
+        self.trajectories_obs = np.append(self.trajectories_obs,
+                                          discriminator_input_obs, axis=0)
+        self.trajectories_acs = np.append(self.trajectories_acs,
+                                          discriminator_input_acs, axis=0)
         self._update_if_dataset_is_ready()
         return action
 
@@ -206,10 +216,10 @@ class GAIL(AttributeSavingMixin, BatchAgent):
             batch_discriminator_values = []
             for obs, action in zip(self.batch_last_state,
                                    self.batch_last_action):
-                obs_and_action = np.concatenate((obs, action), axis=0)
-                discriminator_input = np.expand_dims(obs_and_action, axis=0)
+                discriminator_input_obs = np.expand_dims(obs, axis=0)
+                discriminator_input_acs = np.expand_dims(action, axis=0)
                 reward = chainer.cuda.to_cpu(
-                    -F.log(1 - self.discriminator(discriminator_input) + 1e-8)).array[0, 0]  # NOQA
+                    -F.log(1 - self.discriminator(discriminator_input_obs, discriminator_input_acs) + 1e-8)).array[0, 0]  # NOQA
                 batch_discriminator_values.append(reward)
 
         self.actor.batch_observe_and_train(batch_obs,
@@ -218,10 +228,12 @@ class GAIL(AttributeSavingMixin, BatchAgent):
 
         # update discriminator
         for obs, action in zip(self.batch_last_state, self.batch_last_action):
-            obs_and_action = np.concatenate((obs, action), axis=0)
-            discriminator_input = np.expand_dims(obs_and_action, axis=0)
-            self.trajectories = np.append(self.trajectories,
-                                          discriminator_input, axis=0)
+            discriminator_input_obs = np.expand_dims(obs, axis=0)
+            discriminator_input_acs = np.expand_dims(action, axis=0)
+            self.trajectories_obs = np.append(self.trajectories_obs,
+                                              discriminator_input_obs, axis=0)
+            self.trajectories_acs = np.append(self.trajectories_acs,
+                                              discriminator_input_acs, axis=0)
             self._update_if_dataset_is_ready()
 
     def get_statistics(self):

@@ -57,7 +57,7 @@ def main():
                              ' Videos and additional log will be saved.')
 
     parser.add_argument('--discriminator-lr', type=float, default=3e-4)
-    parser.add_argument('--vf-lr', type=float, default=1e-3)
+    parser.add_argument('--vf-lr', type=float, default=3e-4)
     parser.add_argument('--policy-update-interval', type=int, default=1024,
                         help='Interval steps of TRPO iterations.')
     parser.add_argument('--discriminator-update-interval', type=int,

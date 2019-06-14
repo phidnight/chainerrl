@@ -38,10 +38,9 @@ class BehavioralCloning(AttributeSavingMixin, BatchAgent):
         self.experts = experts
         self.minibatch_size = minibatch_size
         self.states_per_epoch = states_per_epoch
-        self.obs_dim = experts.obs.shape[1]
 
     def act(self, obs):
-        return self.actor.act(obs)
+        return self.model.act(obs)
 
     def act_and_train(self, obs, reward):
         raise NotImplementedError
@@ -70,14 +69,15 @@ class BehavioralCloning(AttributeSavingMixin, BatchAgent):
         return F.mean_squared_error(action, batch_acs)
 
     def train(self, epochs=1):
-        expert_selected_dataset = self.experts.get_samples(
+        expert_selected_obs, expert_selected_acs = self.experts.get_samples(
             self.states_per_epoch)
         data_iter = chainer.iterators.SerialIterator(
-            expert_selected_dataset, self.minibatch_size)
+            np.random.permutation(np.arange(self.states_per_epoch)),
+            self.minibatch_size)
         while data_iter.epoch < epochs:
-            batch = np.array(data_iter.__next__())
-            batch_obs = batch[:, :self.obs_dim]
-            batch_acs = batch[:, self.obs_dim:]
+            batch_keys = np.array(data_iter.__next__())
+            batch_obs = expert_selected_obs[batch_keys]
+            batch_acs = expert_selected_acs[batch_keys]
             self.optimizer.update(
                 lambda: self._loss(batch_obs, batch_acs))
 
