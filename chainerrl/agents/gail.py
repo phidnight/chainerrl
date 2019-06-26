@@ -10,26 +10,24 @@ import numpy as np
 import chainer
 from chainer import cuda
 import chainer.functions as F
-from chainerrl.links import MLP
 from chainerrl.agent import AttributeSavingMixin, BatchAgent
 
 
 class Discriminator(chainer.Chain, AttributeSavingMixin):
-    saved_attributes = ('model', 'obs_normalizer')
+    saved_attributes = ('model', 'optimizer', 'obs_normalizer')
 
-    def __init__(self, obs_size, acs_size, obs_normalizer=None,
-                 hidden_sizes=(100, 100), last_wscale=0.01):
+    def __init__(self, model, optimizer, obs_normalizer=None):
         super().__init__()
+        self.model = model
+        self.optimizer = optimizer
         self.obs_normalizer = obs_normalizer
-        self.model = MLP(obs_size + acs_size, 1, hidden_sizes,
-                         last_wscale=last_wscale, nonlinearity=F.tanh)
 
     def __call__(self, obs, acs, update_obs_normalizer=False):
-        obs = self.obs_normalizer(
-                obs,
-                update=update_obs_normalizer)
-        data = np.concatenate((obs, acs), axis=1)
-        raw_output = self.model(data)
+        if self.obs_normalizer is not None:
+            obs = self.obs_normalizer(
+                    obs,
+                    update=update_obs_normalizer)
+        raw_output = self.model(obs, acs)
         return F.sigmoid(raw_output)
 
 
@@ -38,10 +36,7 @@ class GAIL(AttributeSavingMixin, BatchAgent):
     See https://arxiv.org/abs/1606.03476
     Args:
         actor (chainerrl.Agent): Policy
-        actor_optimizer (chainer.Optimizer): Optimizer to train actor
         discriminator (Discriminator): Discriminator
-        discriminator_optimizer (chainer.Optimizer): Optimizer to train
-            discriminator
         experts (ExpertDataset): Expert trajectory
         update_interval (int): Interval steps of discriminator iterations.
             Every after this amount of steps, this agent updates
@@ -56,11 +51,9 @@ class GAIL(AttributeSavingMixin, BatchAgent):
             discriminator, only used for recording statistics
         gpu (int): GPU device id if not None nor negative
     """
-    saved_attributes = ('actor', 'actor_optimizer',
-                        'discriminator', 'discriminator_optimizer')
+    saved_attributes = ('actor', 'discriminator')
 
-    def __init__(self, actor, actor_optimizer,
-                 discriminator, discriminator_optimizer,
+    def __init__(self, actor, discriminator,
                  experts, update_interval=1024,
                  minibatch_size=3072, epochs=1,
                  discriminator_entropy_coef=1e-3,
@@ -68,9 +61,7 @@ class GAIL(AttributeSavingMixin, BatchAgent):
                  discriminator_entropy_decay=0.99,
                  gpu=None):
         self.actor = actor
-        self.actor_optimizer = actor_optimizer
         self.discriminator = discriminator
-        self.discriminator_optimizer = discriminator_optimizer
 
         if gpu is not None and gpu >= 0:
             cuda.get_device_from_id(gpu).use()
@@ -148,7 +139,7 @@ class GAIL(AttributeSavingMixin, BatchAgent):
             true_batch_keys = np.array(true_iter.__next__())
             true_batch_obs = expert_selected_obs[true_batch_keys]
             true_batch_acs = expert_selected_acs[true_batch_keys]
-            self.discriminator_optimizer.update(
+            self.discriminator.optimizer.update(
                 lambda: self._loss(fake_batch_obs, fake_batch_acs,
                                    true_batch_obs, true_batch_acs))
 

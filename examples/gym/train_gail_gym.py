@@ -22,6 +22,20 @@ import chainerrl
 from chainerrl.agents.behavioral_cloning import BehavioralCloning
 from chainerrl.agents.gail import Discriminator, GAIL
 from chainerrl.misc.expert_dataset import ExpertDataset
+from chainerrl.links import MLP
+
+
+class DiscriminatorNetwork(chainer.Chain):
+    def __init__(self, obs_size, acs_size,
+                 hidden_sizes=(100, 100), last_wscale=0.01):
+        super().__init__()
+        self.model = self.model = MLP(
+            obs_size + acs_size, 1, hidden_sizes,
+            last_wscale=last_wscale, nonlinearity=F.tanh)
+
+    def __call__(self, obs, acs):
+        data = np.concatenate((obs, acs), axis=1)
+        return self.model(data)
 
 
 def main():
@@ -205,16 +219,16 @@ TRPO only supports gym.spaces.Box or gym.spaces.Discrete action spaces.""")  # N
     obs_normalizer_disc = chainerrl.links.EmpiricalNormalization(
         obs_space.low.size, clip_threshold=5)
     if isinstance(action_space, gym.spaces.Box):
-        disc_model = Discriminator(obs_space.low.size, action_space.low.size,
-                                   obs_normalizer_disc)
+        disc_model = DiscriminatorNetwork(obs_space.low.size,
+                                          action_space.low.size)
     elif isinstance(action_space, gym.spaces.Discrete):
-        disc_model = Discriminator(obs_space.low.size, action_space.n,
-                                   obs_normalizer_disc)
+        disc_model = DiscriminatorNetwork(obs_space.low.size, action_space.n)
     disc_opt = chainer.optimizers.Adam(alpha=args.discriminator_lr)
     disc_opt.setup(disc_model.model)
+    discriminator = Discriminator(disc_model, disc_opt, obs_normalizer_disc)
 
     # ================ Set up GAIL ================
-    agent = GAIL(actor, vf_opt, disc_model, disc_opt, experts,
+    agent = GAIL(actor, discriminator, experts,
                  update_interval=args.discriminator_update_interval,
                  discriminator_entropy_coef=args.discriminator_entropy_coef,
                  gpu=args.gpu)
