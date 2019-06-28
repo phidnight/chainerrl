@@ -225,13 +225,13 @@ TRPO only supports gym.spaces.Box or gym.spaces.Discrete action spaces.""")  # N
         disc_model = DiscriminatorNetwork(obs_space.low.size, action_space.n)
     disc_opt = chainer.optimizers.Adam(alpha=args.discriminator_lr)
     disc_opt.setup(disc_model.model)
-    discriminator = Discriminator(disc_model, disc_opt, obs_normalizer_disc)
+    discriminator = Discriminator(
+        disc_model, disc_opt, obs_normalizer_disc,
+        update_interval=args.discriminator_update_interval,
+        entropy_coef=args.discriminator_entropy_coef, gpu=args.gpu)
 
     # ================ Set up GAIL ================
-    agent = GAIL(actor, discriminator, experts,
-                 update_interval=args.discriminator_update_interval,
-                 discriminator_entropy_coef=args.discriminator_entropy_coef,
-                 gpu=args.gpu)
+    agent = GAIL(actor, discriminator, experts)
 
     if args.load:
         agent.load(args.load)

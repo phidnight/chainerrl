@@ -8,6 +8,7 @@ standard_library.install_aliases()  # NOQA
 
 import os
 import numpy as np
+from chainer.iterators import SerialIterator
 
 
 class ExpertDataset:
@@ -17,6 +18,7 @@ class ExpertDataset:
         self.next_obs = None
         self.nonterminal = None
         self.size = 0
+        self.iter = None
         if load_dir is not None:
             self.load(load_dir)
 
@@ -32,6 +34,7 @@ class ExpertDataset:
             nonterminal if self.nonterminal is None else
             np.vstack((self.nonterminal, nonterminal)))
         self.size += 1
+        self.iter = None  # reset iterator
 
     def save(self, save_dir):
         os.makedirs(save_dir, exist_ok=True)
@@ -47,8 +50,10 @@ class ExpertDataset:
         self.nonterminal = data['nonterminal']
         self.size = len(self.obs)
 
-    def get_samples(self, sample_size):
-        keys = np.random.permutation(self.size)[:sample_size]
-        obs = self.obs[keys]
-        action = self.action[keys]
+    def sample(self):
+        if self.iter is None:
+            self.iter = SerialIterator(np.arange(self.size), 1)
+        key = self.iter.__next__()
+        obs = self.obs[key]
+        action = self.action[key]
         return (obs, action)
