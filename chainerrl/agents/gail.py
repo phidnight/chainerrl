@@ -58,6 +58,8 @@ class Discriminator(chainer.Chain, AttributeSavingMixin):
         if gpu is not None and gpu >= 0:
             cuda.get_device_from_id(gpu).use()
             self.model.to_gpu(device=gpu)
+            if obs_normalizer is not None:
+                self.obs_normalizer.to_gpu(device=gpu)
 
     def get_reward(self, obs, action):
         return self.get_batch_reward(np.expand_dims(obs, axis=0),
@@ -74,10 +76,11 @@ class Discriminator(chainer.Chain, AttributeSavingMixin):
 
     def get_batch_reward(self, batch_obs, batch_action):
         if self.obs_normalizer is not None:
-            batch_obs = self.obs_normalizer(batch_obs)
+            batch_obs = self.obs_normalizer(batch_obs, update=False)
         with chainer.using_config('train', False), chainer.no_backprop_mode():
             infer = self.model(batch_obs, batch_action)
-            return -F.log(1 - F.sigmoid(infer) + 1e-8).array[:, 0]
+            return chainer.cuda.to_cpu(
+                -F.log(1 - F.sigmoid(infer) + 1e-8).array)[:, 0]
 
     def get_batch_reward_and_train(self, batch_obs, batch_action,
                                    batch_expert_obs, batch_expert_action):
@@ -97,7 +100,7 @@ class Discriminator(chainer.Chain, AttributeSavingMixin):
     def _loss(self, fake_batch_obs, fake_batch_action,
               true_batch_obs, true_batch_action):
         if self.obs_normalizer is not None:
-            normalized_obs = self.obs_normalizer(fake_batch_obs)
+            normalized_obs = self.obs_normalizer(fake_batch_obs, update=False)
             infer_fake = self.model(normalized_obs, fake_batch_action)
         else:
             infer_fake = self.model(fake_batch_obs, fake_batch_action)
